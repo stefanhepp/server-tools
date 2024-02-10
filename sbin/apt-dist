@@ -1,0 +1,93 @@
+#!/bin/bash
+# 
+# Author:       Stefan Hepp, stefan@stefant.org
+# Date:         $Date$
+# Revision:     $Id$
+#
+# Copyright (C) 2009 Stefan Hepp
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. 
+#
+
+RELEASE=stable
+SHOWOTHERS=1
+
+usage() {
+    echo "Usage: $0 <options>"
+    echo 
+    echo "Available options are: "
+    echo "  -r,--release <dist>    Set current release"
+#    echo "  -o,--others            Show packages from other releases"
+    echo "  -f,--fixrelease        Replace all packages from other releases with current release"
+    echo "  -h,--help              Show this help"
+}
+
+printl() {
+    local len=$1
+    shift
+    local str=$*
+    echo -n "$str "
+    i=${#str}
+    while [ $i -lt $len ]; do
+	echo -n " "
+	i=$((i+1))
+    done
+}
+
+getpackages() {
+    showpkgs=$1
+
+    echo "Packages from other release/without release/manually installed: "
+
+    #pkgs=`apt-show-versions | grep -v "/$skiprelease " | cut -f 1 -d " "`
+    apt-show-versions | grep -v "/$RELEASE " | while read a b c; do
+	pkg=`echo "$a" | cut -d "/" -f 1`
+	release=`echo "$a" | cut -d "/" -f 2 -s`
+	if [ -z $release ]; then
+	    version=$b
+	    stat="$c"
+	else
+	    stat=$b
+	    version=$c
+	fi
+	printl 25 $pkg
+	printl 10 $release
+	printl 22 $version
+	printl 15 $stat
+
+	def=`apt-show-versions -b -a $pkg | grep " $RELEASE " | cut -s -d " " -f 2`
+	if [ "$def" != "$RELEASE" ]; then
+	    echo -n "$pkg=$def"
+	fi
+	echo
+    done
+
+    echo
+}
+
+while [ ! -z $1 ]; do
+
+    case $1 in
+	-h|--help)
+	    usage
+	    exit
+	    ;;
+	-o|--others)
+	    SHOWOTHERS=1
+	    ;;
+	-r|--release)
+	    RELEASE=$2
+	    shift
+	    ;;
+	*) 
+	    echo "Unknown argument '$1'. Please use --help."
+	    exit 1
+    esac
+    shift
+
+done
+
+getpackages $SHOWOTHERS $RELEASE
+

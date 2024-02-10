@@ -1,0 +1,8 @@
+[Unit]
+Description=DynDNS Update Script
+
+[Service]
+ExecStart=-/usr/local/sbin/dyndns-update xinetd
+StandardInput=socket
+User=root
+

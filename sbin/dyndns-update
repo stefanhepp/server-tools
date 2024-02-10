@@ -1,0 +1,506 @@
+#!/bin/bash
+################################################################
+# DynDNS-Update Script
+# 
+# Author: Stefan Hepp
+# Copyright: 2009 Stefan Hepp
+# License: GPLv3
+#
+# This is a small script to handle DynDNS update requests 
+# as xinetd server and from the commandline.
+# 
+################################################################
+
+### BEGIN INIT INFO
+# Provides:             dyndns-update
+# Required-Start:       $network $remote_fs $syslog
+# Required-Stop:        $network $remote_fs $syslog
+# Default-Start:        2 3 4 5
+# Default-Stop:
+# Short-Description:    Initialize dyndns update
+### END INIT INFO
+
+VERSION=0.2
+NAME="DynDNS-Update"
+DEFCONTENT="text/html"
+
+### configuration ###
+
+DATEFMT="%d.%m.%Y %H:%M:%S"
+LOGFILE=/var/log/dyndns.log
+RUNDIR=/var/run/dyndns
+SCRIPTDIR=/etc/dyndns.d/
+
+EXTIP_SCRIPT="/usr/local/sbin/fritzstat -ip"
+
+# timeout for scripts
+TIMEOUT=60
+
+. /etc/dyndns-update.conf
+
+### end of configuration ###
+
+VERBOSE=0
+EMAIL=0
+MODE=check
+EXTIP=
+HASLOCK=0
+
+ERRORLOG=
+
+#### Helper methods ####
+
+# for debug messages only
+debug() {
+    level=$1
+    shift
+    if [ $VERBOSE -lt $level ]; then
+	return 0
+    fi
+    echo "$1"
+    shift
+    if [ ! -z "$*" ]; then
+	echo "$*"
+    fi
+}
+
+# for log messages
+log() {
+    debug 1 "$@"
+
+    echo `date +"$DATEFMT"`" ($$): $1" >> $LOGFILE
+    shift
+
+    if [ ! -z "$*" ]; then
+	echo "$*" >> $LOGFILE
+    fi
+}
+
+# for error messages
+errormsg() {
+    log "$@"
+    
+    msg=$1
+    shift
+
+    if [ "$EMAIL" == "1" -a "$admin" != "" ]; then
+	if [ "$MSGS" != "" ]; then
+	    MSGS="$MSGS
+-- $msg --"
+	else
+	    MSGS="-- $msg --"
+	fi
+	if [ ! -z "$*" ]; then
+	    MSGS="$MSGS
+$*"
+	fi
+    fi
+    if [ "$EMAIL" == "0" -o $VERBOSE -gt 0 ]; then
+	if [ ! -z "$*" ]; then
+	    echo "-- $msg --"
+	    echo "$*"
+	else
+	    echo "$msg"
+	fi
+    fi
+}
+
+
+startlock() {
+
+    [ $HASLOCK == 1 ] && return 0
+
+    echo $$ > $RUNDIR/lock.new
+
+    # check if old process was killed or is still running
+    if [ -f $RUNDIR/lock.pid ]; then
+        lpid=`cat $RUNDIR/lock.pid`
+	if [ ! -z $lpid ]; then
+	    if [ -d /proc/$lpid ]; then
+		errormsg "Another process ($lpid) is still running."
+		exit 4
+	    else
+		errormsg "Ignoring lock of old process $lpid."
+	    fi
+	else 
+	    errormsg "Another process has just started."
+	    exit 4
+	fi
+    fi
+
+    touch $RUNDIR/lock.pid
+
+    # check if process is winner for lock
+    pid=`cat $RUNDIR/lock.new`
+    if [ "$pid" != "$$" ]; then
+	errormsg "Another process ($pid) was started."
+	exit 4
+    fi
+    
+    HASLOCK=1
+    echo $$ > $RUNDIR/lock.pid
+}
+
+exit_ok() {
+
+    [ $HASLOCK == 1 ] && rm -f $RUNDIR/lock.pid
+
+    exit 0
+}
+
+exit_log() {
+    desc=$1
+
+    log "$MODE failure: $desc"
+
+    [ $HASLOCK == 1 ] && rm -f $RUNDIR/lock.pid
+
+    exit 1
+}
+
+exit_error() {
+    errorcode=$1
+    desc=$2
+
+    if [ "$EMAIL" == "1" -a "$admin" != "" ]; then
+	echo "DynDNS Error ($MODE): $desc
+$MSGS" | mail -s "DynDNS Error: $desc" $admin
+    fi
+    if [ "$EMAIL" == "0" -o $VERBOSE -gt 0 ]; then
+	echo "Error: $desc"
+    fi
+
+    log "$MODE failed ($errorcode): $desc" 
+
+    [ $HASLOCK == 1 ] && rm -f $RUNDIR/lock.pid
+
+    exit $errorcode
+}
+
+
+
+get_ext_ip() {
+    if [ "$EXTIP" != "" ]; then
+	return 0
+    fi
+
+    EXTIP=`$EXTIP_SCRIPT 2>&1`
+    ret=$?
+
+    if [ "$ret" != "0" -o "$EXTIP" == "" ]; then
+	errormsg "Error getting external IP ($ret)" "$EXTIP"
+	return 1
+    fi
+
+    debug 2 "Got external IP: $EXTIP"
+    
+    return 0
+}
+
+get_last_ip() {
+    if [ -f $RUNDIR/lastip.log ]; then
+	LASTIP=`cat $RUNDIR/lastip.log | head -n 1`
+    fi
+
+    debug 2 "Got last IP: $LASTIP"
+}
+
+
+run_scripts() {
+    myip=$1
+    shift
+    
+    # TODO this should be somewhat synchronized
+    echo $myip > $RUNDIR/lastip.log
+    rm -f $RUNDIR/lastcheck.log
+
+    err=0
+
+    for file in $@; do
+	if [ ! -f "$SCRIPTDIR/$file" ]; then
+	    continue
+	fi
+
+	debug 2 "Running script $file .. "
+
+	rs=`IP=$myip timeout $TIMEOUT $SCRIPTDIR/$file 2>&1`
+	ret=$?
+	if [ "$ret" != "0" ]; then
+	    errormsg "Running $file failed ($ret)" "$rs"
+	    echo $file >> $RUNDIR/lastip.log
+	    err=1
+	fi
+    done
+
+    if [ "$err" != "0" ]; then
+	return 3
+    fi
+
+    return 0
+}
+
+
+#### perform main actions ####
+
+run_update() {
+    myip=$1
+
+    files=`ls $SCRIPTDIR`
+    run_scripts $myip $files
+
+    if [ "$?" != "0" ]; then
+	exit_error 3 "$MODE: Error updating IP."
+    fi
+}
+
+run_check() {
+    myip=$1
+    err=0
+
+    files=`tail -n +2 $RUNDIR/lastip.log`
+    if [ ! -z "$files" ]; then
+	log "Re-running failed scripts: "$files
+	run_scripts $myip $files
+        err=$?
+    fi
+
+    # TODO run DNS query checks
+
+    if [ "$err" != "0" ]; then
+	exit_error 3 "$MODE: Error updating IP."
+    fi
+}
+
+run_test() {
+    myip=$1
+    lastip=$2
+
+
+    echo "External IP:     $myip"
+    echo "Last updated IP: $lastip"
+
+    i=1
+    for dns in $dnsdomains; do
+	domain=`echo $dns | cut -f 1 -d "@"`
+	srv=`echo $dns | cut -f 2 -d "@"`
+
+	extip=`dig @$srv $domain A | grep "^$domain.*A" | cut -f 5`
+
+        echo "IP from DNS $i:   $extip  ($domain)"
+	i=$((i+1))
+    done
+}
+
+
+
+### Handle HTTP requests ###
+print_good() {
+    echo -e "HTTP/1.0 200 OK\r"
+    echo -e "\r"
+    echo -e "good $1\r"
+}
+
+print_error() {
+    echo -e "HTTP/1.0 $1 $2\r"
+    echo -e "Content-type: $DEFCONTENT\r"
+    echo -e "Connection: close\r"
+    echo -e "Date: `date`\r"
+    echo -e "\r"
+    echo -e "$2\r"
+}
+
+do_get() {
+
+    myhost=`echo $URL | sed 's/^\/nic\/update.*hostname=\([^&]*\).*$/\1/'`
+    myip=`echo $URL | sed 's/^\/nic\/update.*myip=\([^&]*\).*$/\1/'`
+
+    if [ "$myhost" != "$host" ]; then
+	print_error 403 "Invalid update"
+	exit_log "Invalid DynDNS update request"
+    fi
+
+#    b64auth=`echo "$user:$password" | base64`
+
+    while read a; do
+	a=`echo $a | tr -d "\r"`
+	if [ "$a" == "" ]; then
+	    print_error 401 "Authorization required"
+	    exit_log "Got DynDNS request without authorization, denied."
+	fi
+	
+	auth=`echo "$a" |sed "s/^Authorization: *Basic *\(.*\) *$/\1/"`
+	if [ "$auth" == "$a" -o "$auth" == "" ]; then
+	    continue
+	fi
+	if [ "$auth" == "$b64auth" ]; then
+	    break
+	else
+	    print_error 401 "Authorization invalid"
+	    exit_log "Got DynDNS request with wrong authorization ($auth), denied."
+	fi
+    done
+
+    print_good $myip
+
+    log "DynDNS IP change request; IP: $myip"
+
+    run_update $myip
+}
+
+process_request() {
+    read REQUEST
+
+    REQ_DATE="`date +"%d/%b/%Y:%H:%M:%S %z"`"
+    REQUEST="`echo ${REQUEST} | tr -s [:blank:]`"
+    COMMAND="`echo ${REQUEST} | cut -d ' ' -f 1`"
+    URL="`echo ${REQUEST} | cut -d ' ' -f 2`"
+    PROTOCOL="`echo ${REQUEST} | cut -d ' ' -f 3`"
+
+    case $COMMAND in
+	GET)
+	    do_get
+	    ;;
+	*)
+	    print_error 501 "Not Implemented"
+	    exit_log "Got invalid DynDNS request: command $COMMAND"
+	    ;;
+    esac
+}
+
+#### Commandline interface ####
+
+usage() {
+    echo "Usage: $0 [<mode> <options>]"
+    echo ""
+    echo "  One of the following modes can be used:"
+    echo "    start|restart|reload|update|-u|--update:"
+    echo "	  Force update with external IP retrieved from modem."
+    echo "    check|-c|--check:"
+    echo "        Check if external IP has changed and run update if so, else check"
+    echo "	  if last change was successfull and retry to run failed updates."
+    echo "    test|-t|--test:"
+    echo "        Get external IP, get IP from DNS and compare with last known IP."
+    echo "    --xinetd:"
+    echo "        Run as xinetd daemon, performs update on IP-update request."
+    echo ""
+    echo "  Available options:"
+    echo "       --ip <ip>    Use the given IP as external IP."
+    echo "    -v,--verbose    Be more verbose."
+    echo "    -h,--help	      Print this help."
+    echo ""
+    echo "  If no mode is given, this scripts runs as xinetd daemon."
+    echo "  If a '-' prefixed mode is used, then errors and warnings are printed to"
+    echo "  stderr instead of being sent by email to the admin (except for --xinetd)."
+}
+
+
+while [ "$1" != "" ]; do
+    case $1 in
+	start|restart|reload|update)
+	    MODE=update
+	    EMAIL=1
+	    ;;
+	-u|--update)
+	    MODE=update
+	    EMAIL=0
+	    ;;
+	check)
+	    MODE=check
+	    EMAIL=1
+	    ;;
+	-c|--check)
+	    MODE=check
+	    EMAIL=0
+	    ;;
+	test)
+	    MODE=test
+	    EMAIL=1
+	    ;;
+	-t|--test)
+	    MODE=test
+	    EMAIL=0
+	    ;;
+	xinetd)
+	    MODE=xinetd
+	    EMAIL=1
+	    ;;
+	--xinetd)
+	    MODE=xinetd
+	    EMAIL=0
+	    ;;
+	--ip)
+	    EXTIP=$2
+	    if [ "$2" == "" ]; then
+		echo "Missing argument for '$1'."
+		exit 2
+	    fi
+	    shift
+	    ;;
+	-v|--verbose)
+	    VERBOSE=2
+	    ;;
+	-h|--help)
+	    usage
+	    exit
+	    ;;
+	*)
+	    echo "Unknown argument '$1'."
+	    exit 2
+	    ;;
+    esac
+
+    shift
+done
+
+mkdir -p $RUNDIR
+
+case $MODE in
+    update)
+	startlock
+
+	get_ext_ip
+	
+	if [ "$?" != "0" ]; then
+	    exit_error 2 "Update: Unable to retreive the current external IP."
+	fi
+
+	log "Running manual update; IP: $EXTIP"
+	run_update $EXTIP
+	;;
+    check)
+	startlock
+
+	get_ext_ip
+
+	if [ "$?" != "0" ]; then
+	    exit_error 2 "Check: Unable to retreive the current external IP."
+	fi
+
+	get_last_ip
+
+	if [ "$EXTIP" != "$LASTIP" ]; then
+	    log "Running update after IP change detection; IP: $EXTIP"
+	    run_update $EXTIP
+	else
+	    run_check $EXTIP
+	fi
+	;;
+    test)
+	startlock 
+
+	get_ext_ip
+	get_last_ip
+
+	run_test $EXTIP $LASTIP
+	;;
+    xinetd)
+	log "DynDNS IP change request"
+
+	startlock
+
+	process_request
+	;;
+esac
+
+exit_ok
+

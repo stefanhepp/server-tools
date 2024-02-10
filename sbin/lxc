@@ -1,0 +1,268 @@
+#!/bin/bash
+# 
+# Simple control script for LXC commands
+#
+# Author: Stefan Hepp
+#
+
+CONFIG_FILE=/etc/lxc-cmd.conf
+
+LXC_PATH=`lxc-config lxc.lxcpath`
+
+if [ -f $CONFIG_FILE ]; then
+    . $CONFIG_FILE
+fi
+
+usage() {
+    cmd=`basename $0`
+    echo "Usage:"
+    echo "  $cmd status            Print the status of all machines"
+    echo "  $cmd copy <path> ..    Copy files from the host or a template machine to all machines"
+    echo "  $cmd all <cmd>         Run a command in all running machines"
+    echo "  $cmd <server> enter    Enter a shell on the machine"
+    echo "  $cmd <server> start    Start the given machine"
+    echo "  $cmd <server> stop     Stop the given machine"
+    echo "  $cmd <server> restart  Restart the given machine"
+    echo "  $cmd <server> status   Print the status of the given machine"
+    echo
+    echo "Options:"
+    echo "  $cmd <options>"
+    echo "      -h, --help         Print this help"
+    echo
+    echo "  $cmd run [-h] <cmd> [<options> ..]"
+    echo "      -h, --host         Run the command also on the local host."
+    echo "      <cmd>              The command to execute. Any further options are passed to the command."
+    echo
+    echo "  $cmd copy [-t <server>] <file> <dir> ..."
+    echo "      -s, --template <server>"
+    echo "                         Name of a server to copy files from."
+    echo "                         If omitted, the files will be copied from he host."
+    echo "      -f, --from <dir>   Use <dir> as base directory for copying. Mutually exclusive with -s."
+    echo "      -t, --to <prefix>  Copy files under <prefix> path in server root directories."
+    echo "      -v, --verbose      Print all files being copied."
+    echo "      -d, --dryrun       Don't copy files, only show what would be done."
+    echo "      <file> <dir> ...   List of files or directories to copy."
+    echo
+}
+
+# Check if server with name $1 exists.
+check_server() {
+    local servername=$1
+    if [ ! -d $LXC_PATH/$servername ]; then
+	echo "Server $servername not found."
+	exit 1
+    fi
+}
+
+# Store the root filesystem path in $serverpath for server $1
+get_server_rootfs() {
+    local servername=$1
+    serverpath=`lxc-info -c lxc.rootfs.path --name $servername | sed "s/lxc.rootfs.path *= *//"`
+}
+
+cmd_run_all() {
+    # Run on local host as well?
+    if [ "$1" == "-h" -o "$1" == "--host" ]; then
+	shift 1
+	echo
+	echo "Running command on host ..."
+	echo
+	$@
+    fi
+
+    for s in `lxc-ls --running`; do
+	echo
+	echo "Entering server $s ..."
+	echo
+	lxc-attach $s -- $@
+    done
+}
+
+cmd_copy() {
+    # path arguments for this command
+    local paths=()
+    # Full source paths
+    local abspaths=()
+    # Target paths for each abspaths entry, relative to server path
+    local targetpaths=()
+    # Name of the server to copy from
+    local template=
+    # Source path to copy from
+    local srcpath=
+    # Relative path in server path to copy all files to
+    local targetpath=
+    # Be verbose
+    local verbose=0
+    # Dont copy, just print
+    local dryrun=0
+
+    while [ "$1" != "" ]; do
+	case $1 in
+	    -s|--template)
+		shift 1
+		if [ "$1" == "" ]; then
+		    echo "Missing argument for -t."
+		    exit 1
+		fi
+		if [ "$srcpath" != "" ]; then
+		    echo "-t or -f already specified."
+		    exit 1
+		fi
+		template=$1
+		check_server $template
+		get_server_rootfs $template
+		srcpath=$serverpath
+		;;
+	    -f|--from)
+		shift 1
+		if [ "$1" == "" ]; then
+		    echo "Missing argument for -f."
+		    exit 1
+		fi
+		if [ "$srcpath" != "" ]; then
+		    echo "-t or -f already specified."
+		    exit 1
+		fi
+		srcpath=`realpath $1`
+		;;
+	    -t|--to)
+		shift 1
+		if [ "$1" == "" ]; then
+		    echo "Missing argument for --to."
+		    exit 1
+		fi
+		targetpath=$1
+		;;	
+	    -v|--verbose)
+		verbose=1
+		;;
+	    -d|--dryrun)
+		dryrun=1
+		;;
+	    *)
+		paths+=("$1")
+		;;
+	esac
+	shift 1
+    done
+
+    # check if all sources exist
+    for path in "${paths[@]}"; do
+	if [ "${path:0:1}" == "/" ]; then
+	    # Absolute path
+	    abspath=$srcpath$path
+	    target=$targetpath$path
+	elif [ "$srcpath" != "" ]; then
+	    # Relative path
+	    abspath=`realpath $path`
+	    relpath=`realpath --relative-to=$srcpath $path`
+	    if [ "${relpath:0:2}" == ".." ]; then
+		echo "Path $abspath is outside of source directlry $srcpath"
+		exit 2
+	    fi
+	    target=$targetpath/$relpath
+	else
+	    #Relative path, no srcpath
+	    abspath=`realpath $path`
+	    target=$targetpath/$abspath
+	fi
+	if [ ! -e $abspath ]; then
+	    echo "Source path $abspath does not exist!"
+	    exit 2
+	fi
+	abspaths+=("$abspath")
+	targetpaths+=("$target")
+    done
+
+    # Copy files
+    for server in `lxc-ls --defined`; do
+	# Skip template server
+	if [ "$server" == "$template" ]; then
+	    continue
+	fi
+	
+	get_server_rootfs $server
+
+	echo
+	echo "Copying to server $server in $serverpath ..."
+	echo
+
+	for i in "${!abspaths[@]}"; do
+	    src=${abspaths[i]}
+	    target=`realpath $serverpath/${targetpaths[i]} 2>/dev/null`
+	    if [ $? != 0 ]; then
+		echo "Target path ${targetpaths[i]} in $serverpath not found, skipping!"
+		continue
+	    elif [ $dryrun == 1 ]; then
+		echo "cp -a $src to $target"
+	    elif [ $verbose == 1 ]; then
+		cp -av $src $target
+	    else
+		cp -a  $src $target
+	    fi
+        done
+    done
+}
+
+cmd_shell() {
+    local server=$1
+    local shell=`lxc-attach --name $server -- getent passwd root | awk -F: '{print $NF}'`
+    lxc-attach --name $server -- $shell --login
+}
+
+if [ "$1" == "" ]; then
+    usage
+    exit 1
+fi
+
+case $1 in
+    -h|--help)
+	usage
+	;;
+    status)
+	shift 1
+	lxc-ls --fancy $@
+	;;
+    copy)
+	shift 1
+	cmd_copy $@
+	;;
+    all)
+	shift 1
+	cmd_run_all $@
+	;;
+    *)
+	case $2 in
+	    enter)
+		check_server $1
+		cmd_shell $1
+		;;
+	    start)
+		check_server $1
+		lxc-start --name $1
+		;;
+	    stop)
+		check_server $1
+		lxc-stop --name $1
+		;;
+	    restart)
+		check_server $1
+		lxc-stop --name $1
+		lxc-start --name $1
+		;;
+	    status)
+		check_server $1
+		lxc-info --name $1
+		;;
+	    *)
+		check_server $1
+		if [ $2 == "" ]; then
+		    echo "Missing command."
+		    exit 1
+		else
+		    echo "Unknown command $2 for server $1."
+		    exit 1
+		fi
+	esac
+	;;
+esac
