@@ -4,4 +4,4 @@ if [ -z $1 ]; then
     exit 1
 fi
 
-lxc $1 enter
+lxc enter $1

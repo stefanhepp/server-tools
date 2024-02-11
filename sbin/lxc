@@ -48,6 +48,10 @@ usage() {
 # Check if server with name $1 exists.
 check_server() {
     local servername=$1
+    if [ -z $servername ]; then
+	echo "Missing server name."
+	exit 1
+    fi
     if [ ! -d $LXC_PATH/$servername ]; then
 	echo "Server $servername not found."
 	exit 1
@@ -231,38 +235,29 @@ case $1 in
 	shift 1
 	cmd_run_all $@
 	;;
+    enter)
+	check_server $2
+	cmd_shell $2
+	;;
+    start)
+	check_server $2
+	lxc-start --name $2
+	;;
+    stop)
+	check_server $2
+	lxc-stop --name $2
+	;;
+    restart)
+	check_server $2
+	lxc-stop --name $2
+	lxc-start --name $2
+	;;
+    status)
+	check_server $2
+	lxc-info --name $2
+	;;
     *)
-	case $2 in
-	    enter)
-		check_server $1
-		cmd_shell $1
-		;;
-	    start)
-		check_server $1
-		lxc-start --name $1
-		;;
-	    stop)
-		check_server $1
-		lxc-stop --name $1
-		;;
-	    restart)
-		check_server $1
-		lxc-stop --name $1
-		lxc-start --name $1
-		;;
-	    status)
-		check_server $1
-		lxc-info --name $1
-		;;
-	    *)
-		check_server $1
-		if [ $2 == "" ]; then
-		    echo "Missing command."
-		    exit 1
-		else
-		    echo "Unknown command $2 for server $1."
-		    exit 1
-		fi
-	esac
+	echo "Unknown command $1."
+	exit 1
 	;;
 esac
