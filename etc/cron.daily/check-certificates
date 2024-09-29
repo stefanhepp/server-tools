@@ -1,0 +1,18 @@
+#!/bin/bash
+
+EASYRSA=/etc/openvpn/ca/easyrsa
+
+cd `dirname $EASYRSA`
+
+expired=`$EASYRSA show-expire | grep "Expires"`
+
+if [ "$expired" != "" ]; then
+    echo "Certificates in $EASYRSA are about to expire!"
+    echo "Run ./easyrsa renew <name> nopass to renew."
+    echo
+    $EASYRSA show-expire
+
+    exit 1
+fi
+
+exit 0
