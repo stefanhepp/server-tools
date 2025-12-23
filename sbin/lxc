@@ -33,7 +33,7 @@ usage() {
     echo "      -h, --host         Run the command also on the local host."
     echo "      <cmd>              The command to execute. Any further options are passed to the command."
     echo
-    echo "  $cmd copy [-t <server>] <file> <dir> ..."
+    echo "  $cmd copy [-s <server>] <file> <dir> ..."
     echo "      -s, --template <server>"
     echo "                         Name of a server to copy files from."
     echo "                         If omitted, the files will be copied from he host."
@@ -105,11 +105,11 @@ cmd_copy() {
 	    -s|--template)
 		shift 1
 		if [ "$1" == "" ]; then
-		    echo "Missing argument for -t."
+		    echo "Missing argument for -s."
 		    exit 1
 		fi
 		if [ "$srcpath" != "" ]; then
-		    echo "-t or -f already specified."
+		    echo "-s or -f already specified."
 		    exit 1
 		fi
 		template=$1
