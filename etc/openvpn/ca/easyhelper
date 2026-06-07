@@ -1,0 +1,44 @@
+#!/bin/bash
+
+usage() {
+    echo "Usage: $0 <command>"
+    echo
+    echo "Commands:"
+    echo "    help              Print this help"
+    echo "    expires           Show expiry dates"
+    echo "    fingerprints      Show fingerprints of certificates"
+    exit 0
+}
+
+show_expires() {
+    for cert in `cd pki/issued; ls *.crt`;
+    do
+	exp=`openssl x509 -noout -text -in pki/issued/$cert | grep "Not After" | cut -d: -f2-10`
+	echo -e "$cert expires $exp"
+    done | column -t
+}
+
+fingerprints() {
+    for cert in `cd pki/issued; ls *.crt`;
+    do
+	fingerprint=`openssl x509 -fingerprint -sha256 -in pki/issued/$cert -noout | sed "s/Fingerprint=//"`
+	echo -e "$cert $fingerprint"
+    done | column -t
+}
+
+case $1 in
+    -h|--help|help)
+	usage
+	;;
+    expires)
+	show_expires
+	;;
+    fingerprints)
+	fingerprints
+	;;
+    *)
+	echo "Unknown command or option: $1"
+	exit 1
+	;;
+esac
+
